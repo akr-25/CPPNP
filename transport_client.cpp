@@ -67,7 +67,7 @@ void TransportClient::Connect(const std::string &address, uint16_t port)
 {
   if (socket_ != -1)
   {
-    // Already connected
+    perror("Socket already initialised!");
     return;
   }
 
@@ -85,13 +85,24 @@ void TransportClient::Connect(const std::string &address, uint16_t port)
   inet_pton(AF_INET, address.c_str(), &serverAddress.sin_addr);
   // serverAddress.sin_addr.s_addr = inet_addr(address.c_str());
 
-  // Connect to the server
-  if (connect(socket_, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) == -1)
+  while (true)
   {
-    perror("Connection failed");
-    close(socket_);
-    socket_ = -1;
-    return;
+    // Connect to the server
+    if (connect(socket_, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) == -1)
+    {
+      if (errno == ECONNREFUSED)
+      {
+        printf("Server not Online\n");
+        usleep(5000000);
+        continue;
+      }
+      close(socket_);
+      socket_ = -1;
+      return;
+    }
+    else{ /*---- Successful Connection ----*/
+      break;
+    }
   }
   for (const auto &callback : connectCallbacks_)
   {
@@ -110,13 +121,15 @@ void TransportClient::Disconnect()
       callback();
     }
   }
+  /*--------NOT A GRACEFUL WAY TO DO--------*/
+  exit(EXIT_FAILURE);  
 }
 
 void TransportClient::Send(const std::string &message)
 {
   if (socket_ == -1)
   {
-    // Not connected
+    perror("Socket not created yet!");
     return;
   }
 

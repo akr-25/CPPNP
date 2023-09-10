@@ -8,7 +8,7 @@ int main()
   TransportServer server(ConnectionType::TCP, ConnectionMode::Unicast, Role::Server);
 
   server.RegisterOnConnectCallback([]()
-                                   { std::cout << "Client connected." << std::endl; });
+                                   { std::cout << "New client connected." << std::endl; });
 
   server.RegisterOnDisconnectCallback([]()
                                       { std::cout << "Client disconnected." << std::endl; });
