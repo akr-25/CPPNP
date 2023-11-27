@@ -10,27 +10,36 @@
 #include <unistd.h>
 #include <thread>
 #include <ctime>
+#include <mutex>
+#include <sstream>
 
 #include "streaminfo.cpp"
 
 #define masterClientPort 23008
 #define masterServerPort 23007
+#define BUFFER_SIZE 1024
 
 std::vector<StreamInfo> streams; // List of all streams
+std::mutex streams_mutex;        // Mutex for protecting the streams vector
 
 void sendStreamersList(int clientSocket)
 {
   while (true)
   {
     std::string clientList = "";
-    for (auto &stream : streams)
+    // Lock the mutex to safely access the shared streams vector
     {
-      if (stream.isAlive())
+      std::lock_guard<std::mutex> lock(streams_mutex);
+      clientList.clear();
+      for (auto &stream : streams)
       {
-        clientList += stream.encode();
-        clientList += "\n";
+        if (stream.isAlive())
+        {
+          clientList += stream.encode() + "\t";
+        }
       }
     }
+    clientList += "\n";
     std::cout << "Sending streamers list to " << clientSocket << std::endl;
 
     ssize_t bytesSent = send(clientSocket, clientList.c_str(), clientList.length(), 0);
@@ -38,7 +47,7 @@ void sendStreamersList(int clientSocket)
     {
       perror("Error sending data to client");
       close(clientSocket); // Close the client socket
-      return;              // Exit the function instead of terminating the entire program
+      break;               // Exit the function instead of terminating the entire program
     }
     sleep(3);
   }
@@ -81,8 +90,94 @@ void handleClients()
       exit(EXIT_FAILURE);
     }
 
-    std::thread clientThread(sendStreamersList, clientSocket);
-    clientThread.detach();
+    std::thread T_clientThread(sendStreamersList, clientSocket);
+    T_clientThread.detach();
+  }
+  close(masterSocket);
+}
+
+void consumeServerData(std::stringstream &ss, const std::string &ipAddress, const int port)
+{
+  while (true)
+  {
+    std::string allData = ss.str();
+    size_t pos = allData.find("\n");
+    if (pos != std::string::npos)
+    {
+      std::string data = allData.substr(0, pos);
+      ss.str(allData.substr(pos + 1));
+      // check for heartbeat
+      if (data == "heartbeat")
+      {
+        std::lock_guard<std::mutex> lock(streams_mutex);
+        // std::cout << "Received heartbeat from " << ipAddress << ":" << port << std::endl;
+        for (auto &stream : streams)
+        {
+          if (stream.getIpAddress() == ipAddress && stream.getPort() == port)
+          {
+            stream.resetHeartbeat();
+            break;
+          }
+        }
+        continue;
+      }
+
+      StreamInfo incomingStream(data);
+
+      bool found = false;
+      std::lock_guard<std::mutex> lock(streams_mutex);
+      for (auto &stream : streams)
+      {
+        if (stream.getName() == incomingStream.getName())
+        {
+          found = true;
+          stream.setDescription(incomingStream.getDescription());
+          stream.setStreamingIpAddress(incomingStream.getStreamingIpAddress());
+          stream.setStreamingPort(incomingStream.getStreamingPort());
+          stream.resetHeartbeat();
+          stream.setIpAddress(ipAddress);
+          stream.setPort(port);
+          // std::cout << "Updated stream " << name << " from " << ipAddress << ":" << port << std::endl;
+          break;
+        }
+      }
+
+      if (!found)
+      {
+        incomingStream.setIpAddress(ipAddress);
+        incomingStream.setPort(port);
+        // std::cout << "Added stream " << name << " from " << ipAddress << ":" << port << std::endl;
+        streams.push_back(incomingStream);
+      }
+    }
+    else
+    {
+      break;
+    }
+  }
+}
+
+void handleServerData(int serverSocket, const std::string &ipAddress, const uint16_t port){
+  std::stringstream ss;
+  char buffer[BUFFER_SIZE + 1];
+  while(true){
+    int bytesReceived = recv(serverSocket, buffer, BUFFER_SIZE, 0);
+    if (bytesReceived < 0)
+    {
+      perror("Error receiving data from server");
+      exit(EXIT_FAILURE);
+    }
+    if (bytesReceived == 0)
+    {
+      close(serverSocket);
+      std::cout << "Server disconnected: " << ipAddress << ":" << port << std::endl;
+      break;
+    }
+    buffer[bytesReceived] = '\0';
+
+    // std::cout << "Received: " << buffer << " from " << ipAddress << ":" << port << std::endl;
+    ss << buffer;
+    consumeServerData(ss, ipAddress, port);
   }
 }
 
@@ -112,6 +207,9 @@ void handleServers()
     exit(EXIT_FAILURE);
   }
 
+
+  std::stringstream ss;
+
   while (true)
   {
     sockaddr_in serverAddr;
@@ -123,62 +221,20 @@ void handleServers()
       exit(EXIT_FAILURE);
     }
 
-    char buffer[1024];
-    int bytesReceived = recv(serverSocket, buffer, 1024, 0);
-    if (bytesReceived < 0)
-    {
-      perror("Error receiving data from server");
-      exit(EXIT_FAILURE);
-    }
+    const std::string serverIp = inet_ntoa(serverAddr.sin_addr);
+    const uint16_t serverPort = ntohs(serverAddr.sin_port);
 
-    std::string data = std::string(buffer, bytesReceived);
+    std::cout << "Connected to server " << serverIp << ":" << serverPort << std::endl;
 
-    std::string ipAddress = inet_ntoa(serverAddr.sin_addr);
-    int port = ntohs(serverAddr.sin_port);
-
-    // check for heartbeat
-    if (data == "heartbeat")
-    {
-      std::cout << "Received heartbeat from " << ipAddress << ":" << port << std::endl;
-      for (auto &stream : streams)
-      {
-        if (stream.getIpAddress() == ipAddress && stream.getPort() == port)
-        {
-          stream.resetHeartbeat();
-          break;
-        }
-      }
-      continue;
-    }
-
-    int divider = data.find_first_of(" ");
-    std::string name = data.substr(0, divider);
-    std::string description = data.substr(divider + 1);
-
-    bool found = false;
-    for (auto &stream : streams)
-    {
-      if (stream.getName() == name)
-      {
-        found = true;
-        stream.setDescription(description);
-        std::cout << "Updated stream " << name << " from " << ipAddress << ":" << port << std::endl;
-        break;
-      }
-    }
-
-    if (!found)
-    {
-      std::cout << "Added stream " << name << " from " << ipAddress << ":" << port << std::endl;
-      streams.emplace_back(ipAddress, port, name, description);
-    }
+    std::thread T_handleServerData(handleServerData, serverSocket, serverIp, serverPort);
+    T_handleServerData.detach();
   }
 }
 
 int main()
 {
-  std::thread clientThread(handleClients);
-  std::thread serverThread(handleServers);
+  std::thread T_clientThread(handleClients);
+  std::thread T_serverThread(handleServers);
 
   std::string input;
   std::cout << "Tracker is running" << std::endl;
@@ -193,16 +249,17 @@ int main()
     }
     else if (input == "list")
     {
+      std::lock_guard<std::mutex> lock(streams_mutex);
       std::cout << "List of all streams:" << std::endl;
-      std::cout << "Name Description Viewers IP:Port Alive" << std::endl;
+      std::cout << "Name Description Viewers IP:Port Alive StreamingIP:Port" << std::endl;
       for (auto &stream : streams)
       {
-        std::cout << stream.getName() << " " << stream.getDescription() << " " << stream.getNumOfViewers() << " " << stream.getIpAddress() << ":" << stream.getPort() << std::boolalpha << stream.isAlive() << std::endl;
+        std::cout << stream.getName() << "\t" << stream.getDescription() << "\t" << stream.getNumOfViewers() << "\t" << stream.getIpAddress() << ":" << stream.getPort() << "\t" << std::boolalpha << stream.isAlive() << "\t" << stream.getStreamingIpAddress() << ":" << stream.getStreamingPort() << std::endl;
       }
     }
   }
 
-  serverThread.detach();
-  clientThread.detach();
+  T_serverThread.detach();
+  T_clientThread.detach();
   return 0;
 }
