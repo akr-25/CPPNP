@@ -74,73 +74,17 @@ int main(int argc, char *argv[])
 
   std::thread trackerThread(handlerTracker, ip_address, port);
 
-  int sockfd;
-  struct sockaddr_in multicast_addr;
+  // Construct the ffmpeg command
+  std::string ffmpegCmd = "ffmpeg -re -i Up.mkv -c:v mpeg2video -b:v 4M -f mpegts udp://" + std::string(MULTICAST_IP) + ":" + std::to_string(PORT);
 
-  // Create socket
-  sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-  if (sockfd < 0)
+  // Execute the ffmpeg command
+  int ret = system(ffmpegCmd.c_str());
+  if (ret != 0)
   {
-    perror("Failed to create socket");
+    std::cerr << "ffmpeg command failed." << std::endl;
     return -1;
   }
 
-  // Set the multicast TTL
-  unsigned char multicastTTL = 1; // Set according to your network's requirement
-  if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &multicastTTL, sizeof(multicastTTL)) < 0)
-  {
-    std::cerr << "Error setting multicast TTL" << std::endl;
-    return 1;
-  }
-
-  // Set up the multicast destination address
-  memset(&multicast_addr, 0, sizeof(multicast_addr));
-  multicast_addr.sin_family = AF_INET;
-  multicast_addr.sin_addr.s_addr = inet_addr(MULTICAST_IP);
-  multicast_addr.sin_port = htons(PORT);
-
-  std::ifstream file("Up.mp4", std::ios::binary | std::ios::ate);
-  if (!file.is_open())
-  {
-    std::cerr << "Failed to open file" << std::endl;
-    return -1;
-  }
-
-  std::streamsize size = file.tellg();
-  file.seekg(0, std::ios::beg);
-
-  char *buffer = new char[BUFFER_SIZE];
-  
-  while (!file.eof())
-  {
-    file.read(buffer, BUFFER_SIZE);
-    if (sendto(sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&multicast_addr, sizeof(multicast_addr)) < 0)
-    {
-      perror("Failed to send message");
-      close(sockfd);
-      return -1;
-    }
-    // std::cout << "Message sent to multicast group." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(5000)); // Wait for 2 seconds before sending the next message
-  }
-
-  file.close();
-
-  // // Sender loop
-  // while (true)
-  // {
-  //   const char *message = "Hello, multicast group!";
-  //   if (sendto(sockfd, message, strlen(message), 0, (struct sockaddr *)&multicast_addr, sizeof(multicast_addr)) < 0)
-  //   {
-  //     perror("Failed to send message");
-  //     close(sockfd);
-  //     return -1;
-  //   }
-
-  //   std::cout << "Message sent to multicast group." << std::endl;
-  //   sleep(2); // Wait for 2 seconds before sending the next message
-  // }
-
-  close(sockfd);
+  trackerThread.join();
   return 0;
 }
